@@ -261,15 +261,29 @@ def load_audio(path: str, sr: int = SR) -> np.ndarray:
     return y / peak if peak > 0 else y
 
 
-def _print_timeline(intervals: np.ndarray, labels: list[str], margin: float) -> None:
+MAX_TIMELINE_ROWS = 40
+
+
+def _print_timeline(
+    intervals: np.ndarray,
+    labels: list[str],
+    margin: float,
+    limit: int = MAX_TIMELINE_ROWS,
+) -> None:
     if len(labels) == 0:
         print("  no frames -- file shorter than one analysis window?")
         return
     print(f"  {'start':>7} {'end':>7} {'dur':>6}  chord")
     print("  " + "-" * 34)
-    for (s, e), lab in zip(intervals, labels):
+    # A four-minute track produces hundreds of segments and printing all of
+    # them buries the summary underneath. The head is the useful part when
+    # eyeballing a result; --all exists for when it is not.
+    shown = list(zip(intervals, labels))[:limit]
+    for (s, e), lab in shown:
         bar = "#" * min(int((e - s) * 8), 24)
         print(f"  {s:7.2f} {e:7.2f} {e - s:6.2f}  {lab:<7} {bar}")
+    if len(labels) > limit:
+        print(f"  ... {len(labels) - limit} more segments (--all to see them)")
     print()
     print(f"  {len(labels)} segments, {transitions_per_minute(intervals):.0f} changes/min")
     print(f"  mean margin over runner-up: {margin:.3f}")
@@ -290,6 +304,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--gamma", type=float, default=None,
                    help="log compression constant (default off; see recognize docstring)")
     p.add_argument("--min-duration", type=float, default=DEFAULT_MIN_DURATION_S)
+    p.add_argument("--all", action="store_true",
+                   help="print every segment, not just the first 40")
     args = p.parse_args(argv)
 
     if args.demo or not args.path:
@@ -306,7 +322,8 @@ def main(argv: list[str] | None = None) -> None:
 
     kw = dict(smoothing=args.smoothing, causal=not args.centred, gamma=args.gamma)
     intervals, labels = recognize(y, SR, min_duration=args.min_duration, **kw)
-    _print_timeline(intervals, labels, confidence(y, SR, **kw))
+    limit = len(labels) if args.all else MAX_TIMELINE_ROWS
+    _print_timeline(intervals, labels, confidence(y, SR, **kw), limit=limit)
 
     window_ms = args.smoothing * HOP / SR * 1000
     if not args.centred and args.smoothing > 1:

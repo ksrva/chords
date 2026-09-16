@@ -170,3 +170,59 @@ def test_suggest_accepts_durations_from_recognize():
     durations = (intervals[:, 1] - intervals[:, 0]).tolist()
     result = suggest(["C:maj", "G:maj", "G:maj"], comfortable=[2], durations=durations)
     assert result["from_key"] == Key(0, "maj")
+
+
+# --- display: spelling and summaries -----------------------------------------
+# vocab spells everything with sharps so the detector's output is canonical.
+# These cover the boundary where that becomes something a musician reads.
+
+from chordrec.transpose import chord_totals  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "key,pc,expected",
+    [
+        (Key(8, "maj"), 8, "Ab"),      # Ab major, not G#
+        (Key(8, "maj"), 10, "Bb"),
+        (Key(7, "maj"), 6, "F#"),      # G major is a sharp key
+        (Key(0, "maj"), 0, "C"),
+        (Key(5, "min"), 8, "Ab"),      # F minor takes flats
+        (Key(4, "min"), 6, "F#"),      # E minor takes sharps
+    ],
+)
+def test_spelling_follows_the_key_signature(key, pc, expected):
+    assert key.spell(pc) == expected
+
+
+@pytest.mark.parametrize(
+    "key,label,expected",
+    [
+        (Key(8, "maj"), "G#:maj", "Ab"),
+        (Key(8, "maj"), "F:min", "Fm"),
+        (Key(7, "maj"), "E:min", "Em"),
+        (Key(0, "maj"), "N", "-"),
+    ],
+)
+def test_chords_render_as_a_musician_writes_them(key, label, expected):
+    assert key.chord(parse_label(label)) == expected
+
+
+def test_display_transposition_preserves_mode():
+    """Regression: the summary shifted the state index directly, so Cm down a
+    semitone rendered as B rather than Bm -- states run [0-11 maj, 12-23 min]
+    and plain addition walks off the end of major into minor."""
+    source, target = Key(8, "maj"), Key(7, "maj")
+    moved = transpose_label("C:min", -1)
+    assert target.chord(parse_label(moved)) == "Bm"
+
+
+def test_chord_totals_sorts_by_duration():
+    labels = ["C:maj", "G:maj", "C:maj"]
+    totals = chord_totals(labels, [1.0, 5.0, 1.0])
+    assert totals[0] == ("G:maj", 5.0)
+    assert totals[1] == ("C:maj", 2.0)
+
+
+def test_chord_totals_counts_occurrences_without_durations():
+    totals = dict(chord_totals(["C:maj", "C:maj", "G:maj"]))
+    assert totals["C:maj"] == 2.0 and totals["G:maj"] == 1.0

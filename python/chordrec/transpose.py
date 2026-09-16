@@ -80,6 +80,23 @@ MINOR_PROFILE = {
 }
 
 
+# Enharmonic spelling, for display only.
+#
+# `vocab` spells everything with sharps, deliberately: one spelling makes string
+# comparison meaningful and keeps the detector's output canonical. But "G#
+# major" is not a key any musician writes, and a chart in G# is unreadable where
+# the same chart in Ab is obvious. vocab's own docstring says spelling for
+# display is a UI concern and belongs nowhere near the detector -- so it lives
+# here, at the boundary, and never propagates back inward.
+#
+# Which accidental a key uses is fixed by its key signature: the flat keys take
+# flats, the sharp keys take sharps, and C/A minor take neither.
+FLAT_TONICS_MAJOR = {5, 10, 3, 8, 1, 6}        # F Bb Eb Ab Db Gb
+FLAT_TONICS_MINOR = {2, 7, 0, 5, 10, 3}        # Dm Gm Cm Fm Bbm Ebm
+
+FLAT_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+
+
 @dataclass(frozen=True)
 class Key:
     """A key as a tonic pitch class plus a mode."""
@@ -87,8 +104,26 @@ class Key:
     tonic: int
     mode: str            # "maj" or "min"
 
+    @property
+    def uses_flats(self) -> bool:
+        pool = FLAT_TONICS_MAJOR if self.mode == "maj" else FLAT_TONICS_MINOR
+        return self.tonic in pool
+
+    def spell(self, pitch_class: int) -> str:
+        """Name a pitch class the way this key would write it."""
+        names = FLAT_NAMES if self.uses_flats else PITCH_CLASS_NAMES
+        return names[pitch_class % N_PITCH_CLASSES]
+
+    def chord(self, state: int) -> str:
+        """A state index as a musician writes it in this key: "Ab", "Fm"."""
+        if state == NO_CHORD_INDEX:
+            return "-"
+        suffix = "" if state < N_PITCH_CLASSES else "m"
+        return self.spell(state % N_PITCH_CLASSES) + suffix
+
     def __str__(self) -> str:
-        return f"{PITCH_CLASS_NAMES[self.tonic]} {'major' if self.mode == 'maj' else 'minor'}"
+        quality = "major" if self.mode == "maj" else "minor"
+        return f"{self.spell(self.tonic)} {quality}"
 
 
 def parse_key(text: str) -> int:
@@ -241,19 +276,89 @@ def suggest(
     }
 
 
-def _print_result(original: list[str], result: dict) -> None:
-    arrow = "no change" if result["semitones"] == 0 else (
-        f"{result['semitones']:+d} semitones"
-    )
-    print(f"  key        {result['from_key']}  ->  {result['to_key']}   ({arrow})")
-    print(f"  confidence {result['margin']:.0%}")
-    if result["margin"] < 0.10:
-        print("  ^ thin. relative major and minor share six of seven chords;")
-        print("    check this is the key you think it is before trusting the shift.")
+def chord_totals(
+    labels: list[str],
+    durations: list[float] | None = None,
+) -> list[tuple[str, float]]:
+    """Chords by how long they sound, longest first.
+
+    The useful summary of a song. A per-segment timeline is the honest raw
+    output and is unreadable past about twenty segments -- a four-minute track
+    produces several hundred, most of them fragments. What a player actually
+    needs is which chords the song is made of, which is this.
+    """
+    weights = durations if durations is not None else [1.0] * len(labels)
+    totals: dict[str, float] = {}
+    for label, weight in zip(labels, weights):
+        totals[label] = totals.get(label, 0.0) + float(weight)
+    return sorted(totals.items(), key=lambda kv: -kv[1])
+
+
+def _print_result(
+    original: list[str],
+    result: dict,
+    durations: list[float] | None = None,
+    show_timeline: bool = False,
+    top: int = 8,
+) -> None:
+    from_key, to_key = result["from_key"], result["to_key"]
+    shift = result["semitones"]
+
+    print(f"  key     {from_key}"
+          + ("" if shift == 0 else f"   ->   {to_key}"))
+    if shift == 0:
+        print("  shift   none -- already in a key you sing")
+    else:
+        direction = "up" if shift > 0 else "down"
+        plural = "" if abs(shift) == 1 else "s"
+        print(f"  shift   {direction} {abs(shift)} semitone{plural}")
+
+    totals = chord_totals(original, durations)
+    span = sum(weight for _, weight in totals) or 1.0
+
     print()
-    width = max((len(x) for x in original), default=1)
-    print("  " + "  ".join(f"{x:<{width}}" for x in original))
-    print("  " + "  ".join(f"{x:<{width}}" for x in result["labels"]))
+    print("  chords to play")
+    covered = 0.0
+    for label, weight in totals[:top]:
+        # Shift the *label*, not the state index: states are laid out
+        # [0-11 major, 12-23 minor], so plain addition walks off the end of
+        # major and into minor. Cm - 1 is Bm, but state 12 - 1 is state 11,
+        # which is B major.
+        state = parse_label(label)
+        was = from_key.chord(state)
+        now = to_key.chord(parse_label(transpose_label(label, shift)))
+        share = weight / span
+        covered += share
+        bar = "#" * max(int(share * 40), 1)
+        print(f"    {was:<4} -> {now:<4} {share:5.0%}  {bar}")
+    if len(totals) > top:
+        print(f"    ... and {len(totals) - top} more, "
+              f"{1 - covered:.0%} of the time between them")
+    print()
+    print(f"  the {min(top, len(totals))} above cover {covered:.0%} of the song")
+
+    if show_timeline:
+        print()
+        print("  timeline")
+        width = 0
+        line: list[str] = []
+        for label in result["labels"]:
+            cell = to_key.chord(parse_label(label))
+            line.append(f"{cell:<5}")
+            width += 1
+            if width == 12:
+                print("    " + "".join(line))
+                line, width = [], 0
+        if line:
+            print("    " + "".join(line))
+
+    if result["margin"] < 0.10:
+        print()
+        print(f"  ! key confidence is only {result['margin']:.0%}.")
+        print(f"    {from_key} and its relative "
+              f"{'minor' if from_key.mode == 'maj' else 'major'} share six of")
+        print("    seven chords, so this could be either. Check it sounds right")
+        print("    before trusting the shift.")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -264,15 +369,30 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--keys", required=True,
                    help="comfortable tonics, comma separated (e.g. D,G)")
     p.add_argument("--file", help="recognize chords from an audio file first")
+    p.add_argument("--timeline", action="store_true",
+                   help="print every chord in order, not just the summary")
+    p.add_argument("--top", type=int, default=8,
+                   help="how many chords to summarize (default 8)")
     args = p.parse_args(argv)
 
     comfortable = [parse_key(k) for k in args.keys.split(",") if k.strip()]
 
     if args.file:
+        import os
+
         from .recognize import SR, load_audio, recognize
-        intervals, labels = recognize(load_audio(args.file, SR), SR)
+
+        audio = load_audio(args.file, SR)
+        # A song's chords last seconds, not one 93 ms frame. Smoothing hard is
+        # what makes a four-minute track readable instead of several hundred
+        # fragments; the latency it costs is irrelevant when reading a file.
+        intervals, labels = recognize(audio, SR, smoothing=21)
         durations = [float(e - s) for s, e in intervals]
-        print(f"\n{args.file}  ->  {len(labels)} segments")
+        minutes, seconds = divmod(int(len(audio) / SR), 60)
+        print()
+        print(f"  {os.path.basename(args.file)}")
+        print(f"  {minutes}:{seconds:02d}, {len(labels)} chord segments")
+        print()
     elif args.chords:
         labels = [state_label(parse_chord_symbol(c)) for c in args.chords]
         durations = None
@@ -280,8 +400,14 @@ def main(argv: list[str] | None = None) -> None:
     else:
         p.error("give a progression or --file")
 
-    print()
-    _print_result(labels, suggest(labels, comfortable, durations))
+    show_timeline = args.timeline or (not args.file and len(labels) <= 32)
+    _print_result(
+        labels,
+        suggest(labels, comfortable, durations),
+        durations=durations,
+        show_timeline=show_timeline,
+        top=args.top,
+    )
     print()
 
 

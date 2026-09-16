@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chordrec"
+version = "0.0.1"
+description = "Reference implementation and evaluation harness for the chord detector"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# librosa and mir_eval are evaluation/reference tooling, not part of the
+# algorithm. The detector itself must run on numpy alone, because everything
+# in it has to be reimplementable in Rust.
+eval = ["mir_eval>=0.7", "soundfile>=0.12"]
+reference = ["librosa>=0.10"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["chordrec*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

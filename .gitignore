@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+node_modules/
+target/
+pkg/
+dist/
+.DS_Store
+# Audio is never committed: the test set is recorded locally and the labels
+# are what matter. See fixtures/README.md.
+*.wav
+*.mp3
+*.flac
+*.m4a

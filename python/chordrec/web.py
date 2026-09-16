@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .chart import build_chart, parse_lrc, song_vocabulary
+from .page import PAGE
 from .recognize import SR, load_audio, recognize
 from .transpose import chord_totals, parse_key, suggest, transpose_label
 from .vocab import parse_label
@@ -49,6 +50,9 @@ SONG_SMOOTHING = 21
 # song's real chord set, against 70% at the settings above.
 CHART_SMOOTHING = 41
 CHART_MIN_DURATION = 1.0
+
+# Extensions that mean "this is the lyrics file, in the wrong box".
+LYRIC_SUFFIXES = {".lrc", ".txt", ".srt", ".vtt"}
 
 
 def parse_multipart(body: bytes, content_type: str) -> dict[str, tuple[str | None, bytes]]:
@@ -69,209 +73,6 @@ def parse_multipart(body: bytes, content_type: str) -> dict[str, tuple[str | Non
         if name:
             fields[name] = (part.get_filename(), part.get_payload(decode=True) or b"")
     return fields
-
-
-PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>chords</title>
-<style>
-  :root { --ink:#1a1a1a; --dim:#6b6b6b; --line:#d8d4cc; --bg:#f7f5f0; --accent:#8a5a2b; }
-  * { box-sizing: border-box; }
-  body {
-    margin:0; padding:48px 16px; background:var(--bg); color:var(--ink);
-    font:16px/1.55 Georgia, "Times New Roman", serif;
-  }
-  main { max-width:660px; margin:0 auto; }
-  h1 { font-size:28px; font-weight:normal; margin:0 0 4px; letter-spacing:.01em; }
-  .sub { color:var(--dim); font-style:italic; margin:0 0 32px; }
-  fieldset { border:1px solid var(--line); padding:20px; margin:0 0 20px; background:#fff; }
-  legend { padding:0 8px; color:var(--dim); font-size:13px; text-transform:uppercase;
-           letter-spacing:.08em; font-family:system-ui, sans-serif; }
-  label { display:block; margin-bottom:6px; font-size:14px; color:var(--dim);
-          font-family:system-ui, sans-serif; }
-  input[type=file], input[type=text] {
-    width:100%; padding:9px; border:1px solid var(--line); background:#fff;
-    font:14px system-ui, sans-serif; color:var(--ink);
-  }
-  .keys { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
-  .keys button {
-    border:1px solid var(--line); background:#fff; padding:6px 11px; cursor:pointer;
-    font:13px system-ui, sans-serif; color:var(--ink); min-width:42px;
-  }
-  .keys button[aria-pressed=true] { background:var(--ink); color:#fff; border-color:var(--ink); }
-  .go { margin-top:18px; width:100%; padding:12px; border:none; cursor:pointer;
-        background:var(--ink); color:#fff; font:15px Georgia, serif; letter-spacing:.02em; }
-  .go:disabled { background:var(--dim); cursor:progress; }
-  .note { font-size:13px; color:var(--dim); margin-top:10px; font-family:system-ui, sans-serif; }
-  #out { margin-top:28px; }
-  .card { border:1px solid var(--line); background:#fff; padding:22px; }
-  .file { font-size:13px; color:var(--dim); font-family:system-ui, sans-serif;
-          margin:0 0 14px; word-break:break-all; }
-  .key { font-size:26px; margin:0 0 2px; }
-  .key .to { color:var(--accent); }
-  .shift { color:var(--dim); font-style:italic; margin:0 0 20px; }
-  table { width:100%; border-collapse:collapse; font-size:15px; }
-  th { text-align:left; font:12px system-ui, sans-serif; text-transform:uppercase;
-       letter-spacing:.07em; color:var(--dim); font-weight:normal;
-       border-bottom:1px solid var(--line); padding:0 0 6px; }
-  td { padding:7px 0; border-bottom:1px solid #efece6; }
-  td.was { width:70px; color:var(--dim); }
-  td.now { width:70px; font-weight:bold; color:var(--accent); }
-  th.pct, td.pct { width:58px; text-align:right; color:var(--dim); font-size:13px;
-           font-family:system-ui, sans-serif; }
-  .bar { height:9px; background:var(--accent); opacity:.75; }
-  .cover { margin:16px 0 0; font-size:13px; color:var(--dim);
-           font-family:system-ui, sans-serif; }
-  .maybe { margin:6px 0 0; font-size:13px; color:var(--dim);
-           font-family:system-ui, sans-serif; }
-  .sheet { margin-top:26px; padding-top:20px; border-top:1px solid var(--line); }
-  .sheet h2 { font:12px system-ui, sans-serif; text-transform:uppercase;
-              letter-spacing:.07em; color:var(--dim); font-weight:normal; margin:0 0 14px; }
-  .sheet pre { font:14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-               margin:0; white-space:pre; overflow-x:auto; }
-  .sheet .c { color:var(--accent); font-weight:bold; }
-  .sheet .w { color:var(--ink); }
-  .err { border-left:3px solid #a33; background:#fdf5f5; padding:14px;
-         font:14px system-ui, sans-serif; white-space:pre-wrap; }
-</style>
-</head>
-<body>
-<main>
-  <h1>chords</h1>
-  <p class="sub">Find a song&rsquo;s key, and move it to one you can sing.</p>
-
-  <fieldset>
-    <legend>audio</legend>
-    <label for="f">wav, mp3, flac, aiff or ogg &mdash; not m4a</label>
-    <input type="file" id="f" accept=".wav,.mp3,.flac,.aiff,.aif,.ogg,.caf,audio/*">
-  </fieldset>
-
-  <fieldset>
-    <legend>lyrics <span style="text-transform:none;letter-spacing:0">(optional)</span></legend>
-    <label for="l">An <code>.lrc</code> file &mdash; timed lyrics. Add one and you
-      get a chord sheet instead of a summary.</label>
-    <input type="file" id="l" accept=".lrc,.txt,text/plain">
-  </fieldset>
-
-  <fieldset>
-    <legend>keys you sing well</legend>
-    <label>Pick the tonics your voice sits in. Minor songs move to the minor of
-      the same letter.</label>
-    <div class="keys" id="keys"></div>
-    <button class="go" id="go" disabled>Analyze</button>
-    <p class="note" id="note">Choose a file and at least one key.</p>
-  </fieldset>
-
-  <div id="out"></div>
-</main>
-
-<script>
-const NOTES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const picked = new Set(["D","G"]);
-const keysEl = document.getElementById("keys");
-const fileEl = document.getElementById("f");
-const lrcEl  = document.getElementById("l");
-const goEl   = document.getElementById("go");
-const noteEl = document.getElementById("note");
-const outEl  = document.getElementById("out");
-
-NOTES.forEach(n => {
-  const b = document.createElement("button");
-  b.textContent = n;
-  b.setAttribute("aria-pressed", picked.has(n));
-  b.onclick = () => {
-    picked.has(n) ? picked.delete(n) : picked.add(n);
-    b.setAttribute("aria-pressed", picked.has(n));
-    refresh();
-  };
-  keysEl.appendChild(b);
-});
-
-function refresh() {
-  const ready = fileEl.files.length > 0 && picked.size > 0;
-  goEl.disabled = !ready;
-  noteEl.textContent = ready
-    ? "Ready. A four-minute track takes about a second."
-    : "Choose a file and at least one key.";
-}
-fileEl.onchange = refresh;
-refresh();
-
-goEl.onclick = async () => {
-  const file = fileEl.files[0];
-  goEl.disabled = true;
-  goEl.textContent = "Listening\\u2026";
-  outEl.innerHTML = "";
-  try {
-    const form = new FormData();
-    form.append("audio", file);
-    if (lrcEl.files.length) form.append("lyrics", lrcEl.files[0]);
-    const qs = new URLSearchParams({ keys: [...picked].join(","), name: file.name });
-    const res = await fetch("/analyze?" + qs, { method: "POST", body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "analysis failed");
-    render(data);
-  } catch (e) {
-    outEl.innerHTML = '<div class="err">' + escape(e.message) + "</div>";
-  } finally {
-    goEl.disabled = false;
-    goEl.textContent = "Analyze";
-    refresh();
-  }
-};
-
-const escape = s => String(s).replace(/[&<>"]/g, c =>
-  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
-
-function sheet(d) {
-  if (!d.sheet || !d.sheet.length) return "";
-  const body = d.sheet.map(l =>
-    (l.chords ? '<span class="c">' + escape(l.chords) + "</span>\n" : "") +
-    '<span class="w">' + escape(l.text) + "</span>"
-  ).join("\n\n");
-  return '<div class="sheet"><h2>chord sheet</h2><pre>' + body + "</pre></div>";
-}
-
-function render(d) {
-  const rows = d.chords.map(c => `
-    <tr>
-      <td class="was">${escape(c.was)}</td>
-      <td class="now">${escape(c.now)}</td>
-      <td class="pct">${Math.round(c.share * 100)}%</td>
-      <td><div class="bar" style="width:${Math.max(c.share * 100, 1.5)}%"></div></td>
-    </tr>`).join("");
-
-  const heading = d.semitones === 0
-    ? `${escape(d.from_key)} <span class="to">&mdash; already yours</span>`
-    : `${escape(d.from_key)} &rarr; <span class="to">${escape(d.to_key)}</span>`;
-
-  const warn = d.margin < 0.10
-    ? `<p class="maybe">Not certain &mdash; could be ${escape(d.relative)}.</p>`
-    : "";
-
-  outEl.innerHTML = `
-    <div class="card">
-      <p class="file">${escape(d.name)} &middot; ${escape(d.duration)} &middot;
-         ${d.segments} chord segments</p>
-      <p class="key">${heading}</p>
-      <p class="shift">${escape(d.shift_text)}</p>
-      <table>
-        <thead><tr><th>played</th><th>you play</th><th class="pct">share</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <p class="cover">These ${d.chords.length} cover
-         ${Math.round(d.covered * 100)}% of the song.</p>
-      ${warn}
-      ${sheet(d)}
-    </div>`;
-}
-</script>
-</body>
-</html>
-"""
 
 
 def analyze(path: str, comfortable: list[int], name: str, top: int = 8,
@@ -317,10 +118,11 @@ def analyze(path: str, comfortable: list[int], name: str, top: int = 8,
             vocabulary = song_vocabulary(labels, durations)
             for line in build_chart(intervals, labels, timed, to_key, shift,
                                     restrict_to=vocabulary):
-                rendered = line.render()
+                # Columns, not a rendered string: the page sets lyrics in a
+                # proportional serif and measures where each chord belongs.
                 sheet.append({
-                    "chords": rendered[0] if len(rendered) == 2 else "",
-                    "text": rendered[-1],
+                    "text": line.text,
+                    "chords": [[col, name] for col, name in line.chords],
                 })
 
     return {
@@ -400,6 +202,15 @@ class Handler(BaseHTTPRequestHandler):
                 lyrics = fields["lyrics"][1].decode("utf-8", errors="replace")
 
         suffix = os.path.splitext(name)[1] or ".wav"
+        if suffix.lower() in LYRIC_SUFFIXES:
+            # Two adjacent file pickers, and the decoder's own complaint about
+            # this is "Format not recognised", which says nothing about what to
+            # do. Name the mistake instead.
+            self._json(400, {"error": f"{name} looks like a lyrics file. "
+                                      "Put it in the lyrics field and choose a "
+                                      "recording for the audio field."})
+            return
+
         tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
         try:
             tmp.write(body)
@@ -407,10 +218,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, analyze(tmp.name, comfortable, name, lyrics=lyrics))
         except Exception as exc:
             traceback.print_exc()
-            hint = ""
             if suffix.lower() in (".m4a", ".aac", ".mp4"):
-                hint = " -- m4a is not supported; convert with afconvert first"
-            self._json(400, {"error": f"{type(exc).__name__}: {exc}{hint}"})
+                message = (f"{suffix} is not supported. Convert it first: "
+                           f"afconvert -f WAVE -d LEI16 in{suffix} out.wav")
+            elif "Format not recognised" in str(exc):
+                message = f"Could not decode {name}. Is it really audio?"
+            else:
+                message = f"{type(exc).__name__}: {exc}"
+            self._json(400, {"error": message})
         finally:
             os.unlink(tmp.name)
 

@@ -18,7 +18,8 @@ parameter-learning pipeline, and the evaluation harness.
 
 ## Status
 
-Milestone 2 in progress: chroma front end written and validated.
+Milestones 2–3 in progress. Chroma front end validated; template emissions and
+the evaluation harness in place, with a frame-wise baseline to beat. No HMM yet.
 
 ## Running
 
@@ -50,6 +51,35 @@ locally recorded piano with labels *derived* (from MIDI, or a chart plus a
 click) rather than hand-annotated, so ground truth is exact and nothing is
 blocked on acquiring copyrighted recordings.
 
+## Baseline
+
+`python -m chordrec.baseline` runs chroma → templates → frame-wise argmax and
+scores it. On **synthetic audio only**, so it measures plumbing, not accuracy on
+music — the number that counts comes from recorded piano at milestone 4.
+
+| condition | WCSR | margin |
+|-----------|------|--------|
+| clean | 0.983 | 0.028 |
+| white noise, 0 dB SNR | 0.983 | 0.019 |
+| percussion (loud) | 0.983 | 0.026 |
+| harmonic interferer, 0.71× RMS | 0.611 | 0.013 |
+| harmonic interferer, 1.06× RMS | 0.364 | 0.012 |
+
+**White noise and percussion barely register.** Both spread energy across all
+twelve pitch classes, and per-frame normalization divides it straight back out.
+A robustness claim built on added noise would be worthless — which is worth
+knowing before designing the ablation, since "add noise, report degradation" is
+the obvious experiment and it measures nothing here.
+
+**Harmonic interference is what breaks it**, because it lands on one pitch
+class rather than all of them. Interferer levels are calibrated by sweep:
+below ~0.35× the music's RMS nothing happens, above ~1.5× the interferer *is*
+the signal and a score of 0.000 is not a robustness result.
+
+**Margins are thin everywhere.** The gap between the best chord and the
+runner-up is 0.028 even on clean audio. WCSR holds up while confidence does
+not, and that gap is what the transition model has to exploit.
+
 ## Measured, not assumed
 
 Agreement with librosa on a I–vi–IV–V progression: **cosine mean 0.974, min
@@ -60,6 +90,17 @@ with a Gaussian centred near C5, ours uses a flat band.
 third partial is a twelfth above it, so the chord's fifth collects energy from
 the root as well as itself. This is what octave-folded spectra look like, and
 it is the reason the detector scores whole templates instead of picking a root.
+
+**A uniform no-chord template cannot work.** Giving N a flat template and
+letting it compete on cosine similarity is the obvious design and is measurably
+wrong: uniform beat the correct chord 0.900 to 0.706 on a synthesised C major,
+because cosine against twelve nonzeros is not comparable to cosine against
+three. N is a threshold instead.
+
+**Log compression costs discriminability.** The C:maj margin over uniform runs
++0.432 uncompressed and −0.194 at γ=100, because compression lifts the noise
+floor and flattens the vector. Measured on synthetic audio with no dynamic
+range to tame, so γ stays in the sweep rather than changing on this evidence.
 
 **The bass limit, in numbers.** Bins per semitone at sr=22050; above 1.0 means
 the distinction is not present in the transform at all:

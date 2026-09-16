@@ -226,3 +226,24 @@ def test_chord_totals_sorts_by_duration():
 def test_chord_totals_counts_occurrences_without_durations():
     totals = dict(chord_totals(["C:maj", "C:maj", "G:maj"]))
     assert totals["C:maj"] == 2.0 and totals["G:maj"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        (Key(8, "maj"), Key(5, "min")),    # Ab major -> F minor
+        (Key(0, "maj"), Key(9, "min")),    # C major  -> A minor
+        (Key(9, "min"), Key(0, "maj")),    # A minor  -> C major
+        (Key(5, "min"), Key(8, "maj")),
+    ],
+)
+def test_relative_key_is_the_one_worth_naming(key, expected):
+    """The runner-up when detection is uncertain, so it is what the warning
+    should name instead of explaining the theory."""
+    assert key.relative == expected
+
+
+def test_relative_is_its_own_inverse():
+    for tonic in range(12):
+        for mode in ("maj", "min"):
+            assert Key(tonic, mode).relative.relative == Key(tonic, mode)

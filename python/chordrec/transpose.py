@@ -121,6 +121,19 @@ class Key:
         suffix = "" if state < N_PITCH_CLASSES else "m"
         return self.spell(state % N_PITCH_CLASSES) + suffix
 
+    @property
+    def relative(self) -> "Key":
+        """The relative major or minor -- the key this one is confused with.
+
+        Sharing six of seven chords, it is almost always the runner-up when
+        detection is uncertain, so it is the one worth naming. "Could be F
+        minor" tells someone what to go and check; explaining why the two are
+        hard to tell apart does not.
+        """
+        if self.mode == "maj":
+            return Key((self.tonic + 9) % N_PITCH_CLASSES, "min")
+        return Key((self.tonic + 3) % N_PITCH_CLASSES, "maj")
+
     def __str__(self) -> str:
         quality = "major" if self.mode == "maj" else "minor"
         return f"{self.spell(self.tonic)} {quality}"
@@ -354,11 +367,7 @@ def _print_result(
 
     if result["margin"] < 0.10:
         print()
-        print(f"  ! key confidence is only {result['margin']:.0%}.")
-        print(f"    {from_key} and its relative "
-              f"{'minor' if from_key.mode == 'maj' else 'major'} share six of")
-        print("    seven chords, so this could be either. Check it sounds right")
-        print("    before trusting the shift.")
+        print(f"  not certain -- could be {from_key.relative}")
 
 
 def main(argv: list[str] | None = None) -> None:
